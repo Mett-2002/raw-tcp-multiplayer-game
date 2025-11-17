@@ -2,51 +2,27 @@
 
 ![Gameplay screenshot](assets/game_screenshot.jpg)
 
-
-**TL;DR:** Two-player authoritative space shooter built with raw TCP sockets, explicit 64-byte message framing, a deterministic 60 FPS server tick loop, and semaphore-controlled multithreading. The project focuses on networking correctness, protocol design, and concurrent state management — not on graphics.
-
----
+**What it is:** A simple two-player 2D space shooter where the server runs all game logic and clients only send input and render the state.
 
 ## Core Technical Challenge
 
-This project demonstrates a real-time multiplayer architecture implemented with **zero networking abstractions**. The system uses:
+This project demonstrates a real-time multiplayer game built **without any networking or concurrency libraries**. The server is fully authoritative, computing all simulation—movement, collisions, enemy waves, and health—while clients only relay input and render frames.  
 
-- **Pure TCP sockets** for all communication  
-- **Manually defined framing** (fixed 64-byte ASCII length header + JSON payload)  
-- **Deterministic tick-based server simulation** at 60 FPS  
-- **Semaphore-protected shared state** across multiple threads  
-- **Explicit synchronization rules** instead of any game engines or networking frameworks  
+The goal is to show how a fully functional multiplayer system can be implemented **from first principles**, focusing on networking, synchronization, and deterministic server-driven simulation.
 
-The server is fully authoritative. All simulation — positions, collisions, enemy waves, health, and win/loss resolution — is computed centrally. Clients are thin renderers that only send input and draw the state provided by the server.  
+## 🎮 Game Overview & Features
 
-This configuration makes networking behavior, concurrency control, and protocol integrity the primary engineering tasks.
+Space Shooter Multiplayer is a **two-player 2D cooperative action game** and an educational, low-level example of networking and multiprocessing. Two clients connect to a Python server over raw TCP; the **server is authoritative** and executes 100% of the simulation (player/enemy movement, collisions, scoring, level progression). Clients are thin Pygame renderers that only send input and draw the server-provided state.
+
+**Core gameplay**
+- Two players share a single arena; last player standing wins.
+- Real-time controls: four-direction movement + shoot.
+- Progressive difficulty: waves scale linearly in size/pressure.
+- Health system and explicit win/lose conditions.
+- Wave-based progression: destroy all enemies to advance.
 
 
----
-
-## 🎮 Game Overview
-
-Space Shooter Multiplayer is a **two-player 2D action game**:
-- Two clients connect to a Python server over raw TCP.
-- The **server executes 100% of the simulation** (player/enemy movement, collisions, scoring, level progression).
-- **Clients only send input and render** frames using Pygame based on server updates.
-- Players control spaceships, shoot descending enemies, and survive progressively harder waves. Last player standing wins.
-
-This repository is intended as an educational, low-level example of networking and multiprocessing for a resume / portfolio.
-
----
-
-## 🕹️ Gameplay Features
-
-- 2-player cooperative space shooter in a shared arena
-- Real-time controls: four-direction movement + shoot
-- Progressive difficulty with linear wave scaling
-- Health system and win/lose conditions
-- Wave-based progression until one player loses
-
----
-
-## 🏗️ Architecture Overview
+## 🏗️ Architecture Overview (Server & Client)
 
 ### Server — Computational Core
 - Single authoritative process that runs the deterministic tick loop (60 ticks/second).
@@ -66,22 +42,23 @@ This repository is intended as an educational, low-level example of networking a
 
 ## 📡 Networking & Protocol
 
-This section describes the exact encoding, framing, and per-tick messaging agreements that ensure determinism and reliable reconstruction of world state over TCP.
+This section explains how the game achieves deterministic, reliable communication over raw TCP, including message encoding, framing, and per-tick ordering.
 
-### Message framing
-- All messages are JSON objects encoded in UTF-8.
-- Every payload is preceded by a **64-byte ASCII header**:
-  - The header contains the payload length as a decimal ASCII string, **right-padded with spaces** to 64 bytes.
-  - Example header: `b'1234                                                           '`.
-- **Wire format:** `header (64 bytes ASCII)` + `payload (length bytes)`.
-- Rationale: TCP is a byte stream; explicit framing is mandatory to detect message boundaries and avoid message coalescing/fragmentation issues.
+### Message Framing
 
-### Receiver: exact byte reads
-Use a blocking helper that reads exactly `n` bytes:
+* All messages are **JSON objects encoded in UTF-8**.
+* Each message is preceded by a **64-byte ASCII header** containing the payload length as a decimal string, **right-padded with spaces**.
+
+  * Example header: `b'1234                                                           '`
+* **Wire format:** `header (64 bytes ASCII)` + `payload (length bytes)`
+* **Why:** TCP is a continuous byte stream. Explicit framing ensures the receiver can detect message boundaries and prevents coalescing or fragmentation issues.
+
+### Receiver Implementation
+
+A helper function ensures exactly `n` bytes are read from the socket:
 
 ```python
 def recvn(sock, n):
-    # read exactly n bytes from socket or raise ConnectionError if closed.
     buf = b''
     while len(buf) < n:
         chunk = sock.recv(n - len(buf))
@@ -90,35 +67,38 @@ def recvn(sock, n):
         buf += chunk
     return buf
 
-# Example usage:
+# Example usage
 hdr = recvn(sock, 64)
 length = int(hdr.decode('ascii').strip())
 payload = recvn(sock, length)
 obj = json.loads(payload.decode('utf-8'))
 ```
 
-**Important:** All receivers must use `recvn` semantics. Using `recv` without exact-length loops will break framing under realistic TCP conditions.
+**Important:** Always use `recvn`. Using `recv` directly without exact-length handling may break framing under normal TCP behavior.
 
-### Message ordering (per-tick)
-Per authoritative design, **order is mandatory**. The server and clients must strictly respect the following sequences.
+### Per-Tick Message Ordering
 
-**Server → Client (4 framed messages per tick, exact order):**
-1. `data` — authoritative dictionary with players, health, level, flags, identities  
-2. `lasers_player1` — JSON array of `{ "x": ..., "y": ... }`  
-3. `lasers_player2` — JSON array of `{ "x": ..., "y": ... }`  
-4. `enemies` — JSON array of `{ "ex": ..., "ey": ..., "ecolor": ... }`
+Message order is **strictly enforced** to maintain authoritative state synchronization.
 
-**Client → Server (2 framed messages per tick, exact order):**
-1. `user_data` — JSON object `{ "connection": ..., "ready": ... }`  
-2. `keys` — serialized JSON array of booleans (as returned by `pygame.key.get_pressed()`)
+**Server → Client (4 messages per tick, exact order):**
 
+1. `data` — authoritative dictionary of players, health, level, flags, and identities
+2. `lasers_player1` — JSON array of player 1’s laser positions
+3. `lasers_player2` — JSON array of player 2’s laser positions
+4. `enemies` — JSON array of enemy positions and colors
+
+**Client → Server (2 messages per tick, exact order):**
+
+1. `user_data` — JSON object: `{ "connection": ..., "ready": ... }`
+2. `keys` — serialized boolean array from `pygame.key.get_pressed()`
 
 
 ---
 
 ## 🗃️ Data Structures (authoritative representations)
 
-### Authoritative data dictionary (server → client)
+### Authoritative Data Dictionary (Server → Client)
+
 ```python
 {
     'ready': bool,
@@ -129,33 +109,37 @@ Per authoritative design, **order is mandatory**. The server and clients must st
 }
 ```
 
-### Laser list (per player)
+### Laser List (per player)
+
 ```python
 [{'x': <int>, 'y': <int>}, ...]
 ```
 
-### Enemy list
+### Enemy List
+
 ```python
 [{'ex': <int>, 'ey': <int>, 'ecolor': <string>}, ...]
 ```
 
 ---
 
+
 ## 🔀 Multiprocessing & Concurrency
 
-The server uses **multithreading** (thread-per-connection) with **semaphore** protection for shared state. This design is intentional: threads provide straightforward I/O concurrency while semaphores enforce deterministic access patterns to critical regions.
+The server uses **multithreading** (thread-per-connection) with **semaphore** protection for shared state. Threads provide straightforward I/O concurrency while semaphores enforce deterministic access to critical regions.
 
-### Concurrency model
-- **Thread per client**: each client is serviced by a dedicated thread that performs blocking socket I/O and coordinates with the authoritative tick loop.
-- **Shared structures**: `data`, `enemies`, `lasers_data`, `lasers_data2`.
-- **Synchronization primitives**: multiple semaphores (named in code as `semaphore2`, `semaphore4`, `semaphore5`, `semaphore6`, `semaphore8`, `semaphore10`, etc.) guard specific resources and operations.
-  - Example responsibilities:
-    - `semaphore2` — protects enemy spawning & movement update
-    - `semaphore4` — protects user connection/slot assignment
-    - `semaphore5` / `semaphore6` — protect player-specific laser lists
-    - `semaphore8` — synchronizes match reset or global state reset
-    - `semaphore10` — protects enemy list mutations
-- **Boolean coordination flags**: used for single-execution operations and to avoid repeated initialization under contention.
+### Concurrency Model
+
+* **Thread per client**: each client has a dedicated thread for blocking socket I/O and coordination with the authoritative tick loop.
+* **Shared structures**: `data`, `enemies`, `lasers_data`, `lasers_data2`.
+* **Synchronization primitives**: multiple semaphores (`semaphore2`, `semaphore4`, `semaphore5`, `semaphore6`, `semaphore8`, `semaphore10`) protect specific resources:
+
+  * `semaphore2` — enemy spawning & movement updates
+  * `semaphore4` — user connection/slot assignment
+  * `semaphore5` / `semaphore6` — player-specific laser lists
+  * `semaphore8` — match/global state reset
+  * `semaphore10` — enemy list mutations
+* **Boolean flags**: ensure single-execution operations and prevent repeated initialization under contention.
 
 ---
 
@@ -163,51 +147,49 @@ The server uses **multithreading** (thread-per-connection) with **semaphore** pr
 
 1. Client connects to server socket.
 2. Client sends initial `'hello'` framed message.
-3. Server responds with the client's assigned identifier `(ip, port)` as a framed message.
-4. Server assigns client to `user1` or `user2` slot; if both are occupied the server responds accordingly.
-5. Regular per-tick communication begins (clocks are not synchronized; server tick is authoritative).
+3. Server responds with client's assigned identifier `(ip, port)`.
+4. Server assigns client to `user1` or `user2` slot; if full, it responds accordingly.
+5. Per-tick communication begins; server tick is authoritative.
 
 ---
 
-## ⚙️ Per‑Tick Server Actions
+## ⚙️ Per-Tick Server Actions
 
-Each server tick (60 FPS deterministic loop) performs:
-- Receive inputs from both clients (blocking or timed reads per design)
-- Update enemy positions and spawn logic (under `semaphore2` / `semaphore10`)
-- Advance lasers: update positions, remove off-screen lasers (protected by `semaphore5`/`semaphore6`)
-- Collision detection: lasers vs enemies, enemies vs players
-- Update player health, set `win`/`lost` flags
-- Progress level when conditions met (spawn new wave)
-- Construct outgoing framed messages in exact order and send them to each client
+* Receive inputs from both clients (blocking or timed reads).
+* Update enemies and spawn logic (`semaphore2` / `semaphore10`).
+* Advance lasers; remove off-screen lasers (`semaphore5` / `semaphore6`).
+* Collision detection: lasers vs enemies, enemies vs players.
+* Update player health, set `win`/`lost` flags.
+* Progress level when conditions met; spawn new wave.
+* Send outgoing framed messages in exact order.
 
-**Critical:** Inputs must be processed and outputs sent within tick deadlines to prevent excessive client-side latency. The server must drop or handle late inputs deterministically.
+**Note:** Inputs must be processed within tick deadlines to avoid latency; late inputs are handled deterministically.
 
 ---
 
-## 🎯 Per‑Tick Client Actions
+## 🎯 Per-Tick Client Actions
 
-Each client runs a 60 FPS loop that:
-- Samples keyboard state (`pygame.key.get_pressed()`)
-- Builds and sends two framed messages in exact order: `user_data`, then `keys`
-- Receives four framed messages from server in exact order and updates local objects
-- Renders the frame using Pygame
-
-Clients never perform collision detection or state mutation other than local representation; all authoritative changes come from server updates.
+* Sample keyboard state (`pygame.key.get_pressed()`).
+* Send two framed messages in order: `user_data`, then `keys`.
+* Receive four framed messages from server in exact order.
+* Render frame using Pygame; clients do not perform game logic.
 
 ---
 
 ## 🔌 Disconnection Handling
 
-- All blocking `recv()` calls are wrapped in `try/except` to catch `ConnectionError`, `OSError`, or unexpected closures.
-- On disconnect, `handle_client_disconnect(conn, addr)` performs:
-  - Clears per-match state
-  - Resets `user1` / `user2` slots to `'0.0.0.0'` placeholders
-  - Clears `enemies` and laser lists
-  - Resets levels, velocities, player health and flags
-  - Closes socket and terminates thread cleanly
-- Server continues to accept new connections after cleanup.
+* All blocking `recv()` calls are wrapped in `try/except`.
+* On disconnect, `handle_client_disconnect(conn, addr)`:
+
+  * Clears per-match state
+  * Resets `user1` / `user2` slots
+  * Clears enemies and laser lists
+  * Resets levels, velocities, player health, and flags
+  * Closes socket and terminates thread
+* Server remains ready for new connections.
 
 ---
+
 
 ## 🚀 How to Run
 
